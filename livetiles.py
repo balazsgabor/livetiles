@@ -3,11 +3,28 @@
 from math import pi,sin,log,exp,atan
 from flask import Flask, Response, redirect
 
+import mapnik
+import os
+
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler, FileModifiedEvent
+
 import sys
+from tempfile import mkstemp
+from threading import Lock
 sys.path.append("..")
 from upgrade_map_xml import upgrade
 
-import mapnik
+app = Flask(__name__)
+app.debug = True
+mapfile = "../osm.xml"
+upgradedmapfile = None
+
+m = None
+prj = None
+tileproj = None
+render_size = 256
+lock = Lock()
 
 DEG_TO_RAD = pi/180
 RAD_TO_DEG = 180/pi
@@ -41,46 +58,52 @@ class GoogleProjection:
         h = RAD_TO_DEG * ( 2 * atan(exp(g)) - 0.5 * pi)
         return (f,h)
 
+class ChangeEventHandler(FileSystemEventHandler):
+    def on_modified(self, event):
+        print "modified:", event.src_path
+        
+        if isinstance(event, FileModifiedEvent) and "osm-live" not in event.src_path:
+            load_map()
 
-
-
-app = Flask(__name__)
-app.debug = True
-mapfile = "../osm.xml"
-newmapfile = "../osm-live.xml"
-
-m = None
-prj = None
-tileproj = None
 
 @app.route('/')
 def home():
     return redirect('static/index.html')
 
-@app.route('/reload')
 def load_map():
-    global m, prj, tileproj
+    global m, prj, tileproj, render_size, upgradedmapfile
     
-    print "upgrading", mapfile
+    lock.acquire()
     
-    upgrade(mapfile, newmapfile, True)
+    try:
+        if not upgradedmapfile is None and os.path.exists(upgradedmapfile):
+            os.unlink(upgradedmapfile)
+        
+        t = mkstemp('.xml', 'osm-live', os.path.dirname(mapfile))
+        upgradedmapfile = t[1]
+        
+        upgrade(mapfile, upgradedmapfile, True)
+        
+        m = mapnik.Map(256, 256)
+        
+        # Load style XML
+        mapnik.load_map(m, upgradedmapfile, True)
     
-    print "loading map"
-    m = mapnik.Map(256, 256)
+        m.resize(render_size, render_size)
     
-    # Load style XML
-    mapnik.load_map(m, newmapfile, True)
-    # Obtain <Map> projection
-    prj = mapnik.Projection(m.srs)
-    # Projects between tile pixel co-ordinates and LatLong (EPSG:4326)
-    maxZoom = 18
-    tileproj = GoogleProjection(maxZoom+1)	
+        # Obtain <Map> projection
+        prj = mapnik.Projection(m.srs)
+        # Projects between tile pixel co-ordinates and LatLong (EPSG:4326)
+        maxZoom = 18
+        tileproj = GoogleProjection(maxZoom+1)
+    finally:
+        lock.release()
     
     return "Map reloaded"
 
 @app.route('/tiles/<int:z>/<int:x>/<int:y>.png')
 def generate_tile(z, x, y):
-    global m, prj, tileproj
+    global m, prj, tileproj, render_size
     
     # Calculate pixel positions of bottom-left & top-right
     p0 = (x * 256, (y + 1) * 256)
@@ -98,19 +121,34 @@ def generate_tile(z, x, y):
     bbox = mapnik.Envelope(c0.x,c0.y, c1.x,c1.y)
     render_size = 256
     
-    m.resize(render_size, render_size)
-    m.zoom_to_box(bbox)
+    output = None
     
-    # Render image with default Agg renderer
-    im = mapnik.Image(render_size, render_size)
-    mapnik.render(m, im)
+    lock.acquire()
     
-    output = im.tostring('png')
+    try:
+        m.zoom_to_box(bbox)
+        
+        # Render image with default Agg renderer
+        im = mapnik.Image(render_size, render_size)
+        mapnik.render(m, im)
+        
+        output = im.tostring('png')
+    finally:
+        lock.release()
     
     return Response(output, mimetype='image/png')
 
+event_handler = ChangeEventHandler()
+observer = Observer()
+observer.schedule(event_handler, path=os.path.dirname(mapfile), recursive=False)
+observer.start()
 
 load_map()
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000, debug=True)
+
+if not upgradedmapfile is None and os.path.exists(upgradedmapfile):
+    os.unlink(upgradedmapfile)
+
+observer.stop()
