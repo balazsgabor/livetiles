@@ -59,8 +59,8 @@ class GoogleProjection:
         return (f,h)
 
 class ChangeEventHandler(FileSystemEventHandler):
-    def on_modified(self, event):
-        print "modified:", event.src_path
+    def on_any_event(self, event):
+        print ">>>>>>>>>>> modified:", event
         
         if isinstance(event, FileModifiedEvent) and "osm-live" not in event.src_path:
             load_map()
@@ -88,6 +88,10 @@ def load_map():
         
         # Load style XML
         mapnik.load_map(m, upgradedmapfile, True)
+        
+        # Cleaning up
+        os.unlink(upgradedmapfile)
+        upgradedmapfile = None
     
         m.resize(render_size, render_size)
     
@@ -147,8 +151,3 @@ load_map()
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000, debug=True)
-
-if not upgradedmapfile is None and os.path.exists(upgradedmapfile):
-    os.unlink(upgradedmapfile)
-
-observer.stop()
