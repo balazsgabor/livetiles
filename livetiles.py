@@ -1,34 +1,21 @@
 #!/usr/bin/env python
 
-from math import pi,sin,log,exp,atan
-from flask import Flask, Response, redirect
+import sys
+sys.path.insert(0, "..")
 
 import mapnik
 import os
 
+from math import pi,sin,log,exp,atan
+from flask import Flask, Response, redirect
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileCreatedEvent
-
-import sys
 from tempfile import mkstemp
 from threading import Lock
-sys.path.append("..")
 from upgrade_map_xml import upgrade
 
-app = Flask(__name__)
-app.debug = True
-mapfile = "../osm.xml"
-upgradedmapfile = None
-
-m = None
-prj = None
-tileproj = None
-render_size = 256
-lock = Lock()
-last_exception = None
-
-DEG_TO_RAD = pi/180
 RAD_TO_DEG = 180/pi
+DEG_TO_RAD = pi/180
 
 class GoogleProjection:
     def __init__(self,levels=18):
@@ -60,105 +47,106 @@ class GoogleProjection:
         return (f,h)
 
 class ChangeEventHandler(FileSystemEventHandler):
-    def on_any_event(self, event):
-        print ">>>>>>>>>>> modified:", event
+    def __init__(self, livetiles):
+        self.livetiles = livetiles
         
-        if (isinstance(event, FileModifiedEvent) or isinstance(event, FileCreatedEvent)) and "osm-live" not in event.src_path:
-            load_map()
+    def on_any_event(self, event):
+        print ">>>>> modified:", event
+        self.livetiles.load_map()
 
+class Livetiles():
+    def __init__(self, mapfile, render_size):
+        self.mapfile = mapfile
+        self.render_size = render_size
+        
+        self.load_exception = None
+        self.lock = Lock()
+        
+    def load_map(self):
+        self.lock.acquire()
+        
+        self.map = None
+        self.load_exception = None
+        
+        try:
+            map_string = upgrade(os.path.basename(self.mapfile), None, False, True)
+            self.map = mapnik.Map(256, 256)
+            
+            mapnik.load_map_from_string(self.map, map_string, True)
+            self.map.resize(self.render_size, self.render_size)
+        except Exception as e:
+            self.load_exception = e
+        finally:
+            self.lock.release()
+
+    def generate_tile(self, z, x, y):
+        self.lock.acquire()
+        
+        resp = "general error"
+        
+        try:
+            if self.load_exception is None:
+                prj = mapnik.Projection(self.map.srs)
+                # Projects between tile pixel co-ordinates and LatLong (EPSG:4326)
+                maxZoom = 18
+                tileproj = GoogleProjection(maxZoom+1)
+                
+                # Calculate pixel positions of bottom-left & top-right
+                p0 = (x * 256, (y + 1) * 256)
+                p1 = ((x + 1) * 256, y * 256)
+                
+                # Convert to LatLong (EPSG:4326)
+                l0 = tileproj.fromPixelToLL(p0, z);
+                l1 = tileproj.fromPixelToLL(p1, z);
+                
+                # Convert to map projection (e.g. mercator co-ords EPSG:900913)
+                c0 = prj.forward(mapnik.Coord(l0[0],l0[1]))
+                c1 = prj.forward(mapnik.Coord(l1[0],l1[1]))
+                
+                # Bounding box for the tile
+                bbox = mapnik.Envelope(c0.x,c0.y, c1.x,c1.y)
+                
+                self.map.zoom_to_box(bbox)
+            
+                # Render image with default Agg renderer
+                im = mapnik.Image(self.render_size, self.render_size)
+                mapnik.render(self.map, im)
+            
+                output = im.tostring('png')
+                resp = Response(output, mimetype='image/png')
+
+            else:
+                resp = self.load_exception.message
+        except Exception as e:
+            resp = e.message
+        finally:
+            self.lock.release()
+        
+        return resp
+
+# init
+map_file = "../osm.xml"
+livetiles = Livetiles(map_file, 256)
+event_handler = ChangeEventHandler(livetiles)
+observer = Observer()
+
+# go live
+dir = os.path.dirname(map_file)
+observer.schedule(event_handler, path=dir, recursive=True)
+os.chdir(dir)
+livetiles.load_map()
+observer.start()
+
+app = Flask(__name__)
+app.debug = True
+
+@app.route('/tiles/<int:z>/<int:x>/<int:y>.png')
+def render_tile(z, x, y):
+    return livetiles.generate_tile(z, x, y)
 
 @app.route('/')
 def home():
     return redirect('static/index.html')
-
-def load_map():
-    global m, prj, tileproj, render_size, upgradedmapfile
-    
-    lock.acquire()
-    
-    try:
-        last_exception = None
-        
-        if not upgradedmapfile is None and os.path.exists(upgradedmapfile):
-            os.unlink(upgradedmapfile)
-        
-        t = mkstemp('.xml', 'osm-live', os.path.dirname(mapfile))
-        upgradedmapfile = t[1]
-        
-        upgrade(mapfile, upgradedmapfile, True)
-        
-        m = mapnik.Map(256, 256)
-        
-        # Load style XML
-        mapnik.load_map(m, upgradedmapfile, True)
-        
-        # Cleaning up
-        os.unlink(upgradedmapfile)
-        upgradedmapfile = None
-    
-        m.resize(render_size, render_size)
-    
-        # Obtain <Map> projection
-        prj = mapnik.Projection(m.srs)
-        # Projects between tile pixel co-ordinates and LatLong (EPSG:4326)
-        maxZoom = 18
-        tileproj = GoogleProjection(maxZoom+1)
-    except RuntimeError as err:
-        last_exception = err
-        m = None
-    finally:
-        lock.release()
-    
-    return "Map reloaded"
-
-@app.route('/tiles/<int:z>/<int:x>/<int:y>.png')
-def generate_tile(z, x, y):
-    global m, prj, tileproj, render_size
-    
-    lock.acquire()
-    
-    try:
-        if last_exception is not None:
-            resp = last_exception.tostring()
-        elif m is None:
-            resp = "Error, m is None"
-        else:
-            # Calculate pixel positions of bottom-left & top-right
-            p0 = (x * 256, (y + 1) * 256)
-            p1 = ((x + 1) * 256, y * 256)
-            
-            # Convert to LatLong (EPSG:4326)
-            l0 = tileproj.fromPixelToLL(p0, z);
-            l1 = tileproj.fromPixelToLL(p1, z);
-            
-            # Convert to map projection (e.g. mercator co-ords EPSG:900913)
-            c0 = prj.forward(mapnik.Coord(l0[0],l0[1]))
-            c1 = prj.forward(mapnik.Coord(l1[0],l1[1]))
-            
-            # Bounding box for the tile
-            bbox = mapnik.Envelope(c0.x,c0.y, c1.x,c1.y)
-            render_size = 256
-            
-            m.zoom_to_box(bbox)
-        
-            # Render image with default Agg renderer
-            im = mapnik.Image(render_size, render_size)
-            mapnik.render(m, im)
-        
-            output = im.tostring('png')
-            
-            resp = Response(output, mimetype='image/png')
-    finally:
-        lock.release()
-    
-    return resp
-
-event_handler = ChangeEventHandler()
-observer = Observer()
-observer.schedule(event_handler, path=os.path.dirname(mapfile), recursive=False)
-observer.start()
-
-load_map()
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000, debug=True)
