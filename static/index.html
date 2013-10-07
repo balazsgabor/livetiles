@@ -3,6 +3,16 @@
 <title>OSM Live Tiles</title>
 <meta content="text/html; charset=UTF-8" />
 <link rel="stylesheet" href="style.css" type="text/css" />
+<style>
+.olControlLayerSwitcher {
+	width: auto;
+}
+.olControlLayerSwitcher .layersDiv {
+    background-color: rgb(186, 186, 180);
+    opacity: 0.8;
+	padding-right: 30px;
+}
+</style>
 <!-- bring in the OpenLayers javascript library
          (here we bring it from the remote site, but you could
          easily serve up this javascript yourself) -->
@@ -12,78 +22,111 @@
          Using this hosted file will make sure we are kept up
          to date with any necessary changes -->
 <script src="OpenStreetMap.js"></script>
-
+<script
+	src="//ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script>
 <script type="text/javascript">
-	// Start position for the map (hardcoded here for simplicity)
-	var lat = 47.49;
-	var lon = 19.05;
-	var zoom = 10;
+	$(function() {
 
-	var map; //complex object of type OpenLayers.Map
+		var map; //complex object of type OpenLayers.Map
 
-	//Initialise the 'map' object
-	function init() {
-
-		map = new OpenLayers.Map("map", {
-			controls : [ new OpenLayers.Control.Navigation(),
-					new OpenLayers.Control.PanZoomBar(),
-					new OpenLayers.Control.Permalink(),
-					new OpenLayers.Control.ScaleLine({
-						geodesic : true
-					}), new OpenLayers.Control.Permalink('permalink'),
-					new OpenLayers.Control.MousePosition(),
-					new OpenLayers.Control.Attribution() ],
-			maxExtent : new OpenLayers.Bounds(-20037508.34, -20037508.34,
-					20037508.34, 20037508.34),
-			maxResolution : 156543.0339,
-			numZoomLevels : 18,
-			units : 'm',
-			projection : new OpenLayers.Projection("EPSG:900913"),
-			displayProjection : new OpenLayers.Projection("EPSG:4326")
+		var panZoomBar = new OpenLayers.Control.PanZoomBar({
+			panIcons : false
 		});
 
-		var layerMapnik = new OpenLayers.Layer.OSM.Mapnik("Mapnik");
-		layerMapnik.setOpacity(0.4);
-		map.addLayer(layerMapnik);
+		OpenLayers.Util.extend(panZoomBar, {
+			draw : function(px) {
+				OpenLayers.Control.prototype.draw.apply(this, arguments);
 
-		var layerCycleMap = new OpenLayers.Layer.OSM.CycleMap("CycleMap");
-		layerCycleMap.setOpacity(0.4);
-		map.addLayer(layerCycleMap);
+				this.buttons = [];
 
-		var prodLayer = new OpenLayers.Layer.OSM("utolsó generálás",
-				"http://tiles.ingatlan.com/tiles/${z}/${x}/${y}.png", {
-					numZoomLevels : 19,
-					alpha : true,
-					isBaseLayer : false
+				var button_size = {
+					w : 24,
+					h : 24
+				};
+				var zoombar_container = new OpenLayers.Pixel(15, 5);
+
+				this._addButton("zoomin", "icom-zoom-plus-mini.png",
+						zoombar_container.add(0, 10), button_size);
+				zoombar_container = this._addZoomBar(zoombar_container.add(0,
+						button_size.h + 10));
+				this._addButton("zoomout", "icom-zoom-minus-mini.png",
+						zoombar_container, button_size);
+
+				$(this.slider).find('img').attr('src', 'img/icom-slider.png')
+						.css({
+							'margin-left' : '3px'
+						});
+				$(this.zoombarDiv).css({
+					'background-image' : 'url("img/icom-zoombar.png")',
+					'width' : '10px',
+					'margin-left' : '7px'
 				});
-		map.addLayer(prodLayer);
 
-		// This is the layer that uses the locally stored tiles
-		var newLayer = new OpenLayers.Layer.OSM("mostani állapot",
-				"../tiles/${z}/${x}/${y}.png", {
-					numZoomLevels : 19,
-					alpha : true,
-					isBaseLayer : false
+				return this.div;
+			}
+		});
+
+		map = new OpenLayers.Map(
+				"map",
+				{
+					controls : [ new OpenLayers.Control.Navigation(),
+							panZoomBar, new OpenLayers.Control.Permalink(),
+							new OpenLayers.Control.ScaleLine({
+								geodesic : true
+							}), new OpenLayers.Control.Permalink('permalink'),
+							new OpenLayers.Control.MousePosition() ],
+					maxExtent : new OpenLayers.Bounds(-20037508.34,
+							-20037508.34, 20037508.34, 20037508.34),
+					maxResolution : 156543.0339,
+					numZoomLevels : 18,
+					units : 'm',
+					projection : new OpenLayers.Projection("EPSG:900913"),
+					displayProjection : new OpenLayers.Projection("EPSG:4326"),
+					layers : [
+							// alap osm-es layer
+							new OpenLayers.Layer.OSM.Mapnik("Mapnik", {
+								displayInLayerSwitcher : false,
+								opacity : 0.4
+							}),
+							// utoljára generált csempék, gyk. "éles csempék"
+							new OpenLayers.Layer.OSM(
+									"utolsó generálás",
+									"http://tiles.ingatlan.com/tiles/${z}/${x}/${y}.png",
+									{
+										numZoomLevels : 19,
+										alpha : true,
+										isBaseLayer : false,
+										visibility: false
+									}),
+							// a mostani állapot szerint generált csemperéteg
+							new OpenLayers.Layer.OSM("mostani állapot",
+									"../tiles/${z}/${x}/${y}.png", {
+										numZoomLevels : 19,
+										alpha : true,
+										isBaseLayer : false
+									}) ]
 				});
-		map.addLayer(newLayer);
-		// This is the end of the layer
 
 		var switcherControl = new OpenLayers.Control.LayerSwitcher();
 		map.addControl(switcherControl);
 		switcherControl.maximizeControl();
 
 		if (!map.getCenter()) {
+			var lat = 47.49;
+			var lon = 19.05;
+			var zoom = 10;
+
 			var lonLat = new OpenLayers.LonLat(lon, lat).transform(
 					new OpenLayers.Projection("EPSG:4326"), map
 							.getProjectionObject());
 			map.setCenter(lonLat, zoom);
 		}
-	}
+	});
 </script>
 </head>
 
 <!-- body.onload is called once the page is loaded (call the 'init' function) -->
-<body onload="init();">
+<body>
 
 	<!-- define a DIV into which the map will appear. Make it take up the whole window -->
 	<div style="width: 100%; height: 100%" id="map"></div>
