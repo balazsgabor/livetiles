@@ -7,7 +7,7 @@ import mapnik
 import os
 
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileModifiedEvent
+from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileCreatedEvent
 
 import sys
 from tempfile import mkstemp
@@ -25,6 +25,7 @@ prj = None
 tileproj = None
 render_size = 256
 lock = Lock()
+last_exception = None
 
 DEG_TO_RAD = pi/180
 RAD_TO_DEG = 180/pi
@@ -62,7 +63,7 @@ class ChangeEventHandler(FileSystemEventHandler):
     def on_any_event(self, event):
         print ">>>>>>>>>>> modified:", event
         
-        if isinstance(event, FileModifiedEvent) and "osm-live" not in event.src_path:
+        if (isinstance(event, FileModifiedEvent) or isinstance(event, FileCreatedEvent)) and "osm-live" not in event.src_path:
             load_map()
 
 
@@ -76,6 +77,8 @@ def load_map():
     lock.acquire()
     
     try:
+        last_exception = None
+        
         if not upgradedmapfile is None and os.path.exists(upgradedmapfile):
             os.unlink(upgradedmapfile)
         
@@ -100,6 +103,9 @@ def load_map():
         # Projects between tile pixel co-ordinates and LatLong (EPSG:4326)
         maxZoom = 18
         tileproj = GoogleProjection(maxZoom+1)
+    except RuntimeError as err:
+        last_exception = err
+        m = None
     finally:
         lock.release()
     
@@ -109,38 +115,43 @@ def load_map():
 def generate_tile(z, x, y):
     global m, prj, tileproj, render_size
     
-    # Calculate pixel positions of bottom-left & top-right
-    p0 = (x * 256, (y + 1) * 256)
-    p1 = ((x + 1) * 256, y * 256)
-    
-    # Convert to LatLong (EPSG:4326)
-    l0 = tileproj.fromPixelToLL(p0, z);
-    l1 = tileproj.fromPixelToLL(p1, z);
-    
-    # Convert to map projection (e.g. mercator co-ords EPSG:900913)
-    c0 = prj.forward(mapnik.Coord(l0[0],l0[1]))
-    c1 = prj.forward(mapnik.Coord(l1[0],l1[1]))
-    
-    # Bounding box for the tile
-    bbox = mapnik.Envelope(c0.x,c0.y, c1.x,c1.y)
-    render_size = 256
-    
-    output = None
-    
     lock.acquire()
     
     try:
-        m.zoom_to_box(bbox)
+        if last_exception is not None:
+            resp = last_exception.tostring()
+        elif m is None:
+            resp = "Error, m is None"
+        else:
+            # Calculate pixel positions of bottom-left & top-right
+            p0 = (x * 256, (y + 1) * 256)
+            p1 = ((x + 1) * 256, y * 256)
+            
+            # Convert to LatLong (EPSG:4326)
+            l0 = tileproj.fromPixelToLL(p0, z);
+            l1 = tileproj.fromPixelToLL(p1, z);
+            
+            # Convert to map projection (e.g. mercator co-ords EPSG:900913)
+            c0 = prj.forward(mapnik.Coord(l0[0],l0[1]))
+            c1 = prj.forward(mapnik.Coord(l1[0],l1[1]))
+            
+            # Bounding box for the tile
+            bbox = mapnik.Envelope(c0.x,c0.y, c1.x,c1.y)
+            render_size = 256
+            
+            m.zoom_to_box(bbox)
         
-        # Render image with default Agg renderer
-        im = mapnik.Image(render_size, render_size)
-        mapnik.render(m, im)
+            # Render image with default Agg renderer
+            im = mapnik.Image(render_size, render_size)
+            mapnik.render(m, im)
         
-        output = im.tostring('png')
+            output = im.tostring('png')
+            
+            resp = Response(output, mimetype='image/png')
     finally:
         lock.release()
     
-    return Response(output, mimetype='image/png')
+    return resp
 
 event_handler = ChangeEventHandler()
 observer = Observer()
