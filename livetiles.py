@@ -5,46 +5,13 @@ sys.path.insert(0, "..")
 
 import mapnik
 import os
+from GoogleProjection import GoogleProjection
 
-from math import pi,sin,log,exp,atan
 from flask import Flask, Response, redirect
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileCreatedEvent
-from tempfile import mkstemp
+from watchdog.events import FileSystemEventHandler
 from threading import Lock
 from upgrade_map_xml import upgrade
-
-RAD_TO_DEG = 180/pi
-DEG_TO_RAD = pi/180
-
-class GoogleProjection:
-    def __init__(self,levels=18):
-        self.Bc = []
-        self.Cc = []
-        self.zc = []
-        self.Ac = []
-        c = 256
-        for _ in range(0,levels):
-            e = c/2;
-            self.Bc.append(c/360.0)
-            self.Cc.append(c/(2 * pi))
-            self.zc.append((e,e))
-            self.Ac.append(c)
-            c *= 2
-
-    def fromLLtoPixel(self,ll,zoom):
-        d = self.zc[zoom]
-        e = round(d[0] + ll[0] * self.Bc[zoom])
-        f = minmax(sin(DEG_TO_RAD * ll[1]),-0.9999,0.9999)
-        g = round(d[1] + 0.5*log((1+f)/(1-f))*-self.Cc[zoom])
-        return (e,g)
-    
-    def fromPixelToLL(self,px,zoom):
-        e = self.zc[zoom]
-        f = (px[0] - e[0])/self.Bc[zoom]
-        g = (px[1] - e[1])/-self.Cc[zoom]
-        h = RAD_TO_DEG * ( 2 * atan(exp(g)) - 0.5 * pi)
-        return (f,h)
 
 class ChangeEventHandler(FileSystemEventHandler):
     def __init__(self, livetiles):
@@ -131,9 +98,9 @@ event_handler = ChangeEventHandler(livetiles)
 observer = Observer()
 
 # go live
-dir = os.path.dirname(map_file)
-observer.schedule(event_handler, path=dir, recursive=True)
-os.chdir(dir)
+directory = os.path.dirname(map_file)
+observer.schedule(event_handler, path=directory, recursive=True)
+os.chdir(directory)
 livetiles.load_map()
 observer.start()
 
