@@ -87,14 +87,19 @@ class Livetiles():
         return resp
 
 class LivetilesApp():
-    #map_file = "../osm-upgraded.xml"
-    map_file = "/Users/gabor/Downloads/control-room/control-room.xml"
-    livetiles = Livetiles(map_file, 256)
+    try:
+        mapfile = os.environ['MAPNIK_MAP_FILE']
+    except KeyError:
+        mapfile = "osm.xml"
+        
+    print "using mapfile", mapfile
+        
+    livetiles = Livetiles(mapfile, 256)
     event_handler = ChangeEventHandler(livetiles)
     observer = Observer()
     
     # go live
-    directory = os.path.dirname(map_file)
+    directory = os.path.dirname(mapfile)
     observer.schedule(event_handler, path=directory, recursive=True)
     os.chdir(directory)
     livetiles.load_map()
