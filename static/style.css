@@ -514,3 +514,12 @@ a.olControlZoomOut {
 img.olTileImage {
     max-width: none;
 }
+
+.olControlLayerSwitcher {
+	width: auto;
+}
+.olControlLayerSwitcher .layersDiv {
+    background-color: rgb(186, 186, 180);
+    opacity: 0.8;
+	padding-right: 30px;
+}
