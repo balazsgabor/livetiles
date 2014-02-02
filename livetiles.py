@@ -1,17 +1,13 @@
 #!/usr/bin/env python
 
-import sys
-sys.path.insert(0, "..")
-
 import mapnik
 import os
-from GoogleProjection import GoogleProjection
+import math
 
 from flask import Flask, Response, redirect
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from threading import Lock
-from upgrade_map_xml import upgrade
 
 class ChangeEventHandler(FileSystemEventHandler):
     def __init__(self, livetiles):
@@ -36,15 +32,22 @@ class Livetiles():
         self.load_exception = None
         
         try:
-            map_string = upgrade(os.path.basename(self.mapfile), None, False, True)
+            map_file = os.path.basename(self.mapfile)
             self.map = mapnik.Map(256, 256)
             
-            mapnik.load_map_from_string(self.map, map_string, True)
+            mapnik.load_map(self.map, map_file, False)
             self.map.resize(self.render_size, self.render_size)
         except Exception as e:
             self.load_exception = e
         finally:
             self.lock.release()
+    
+    def num2deg(self, xtile, ytile, zoom):
+        n = 2.0 ** zoom
+        lon_deg = xtile / n * 360.0 - 180.0
+        lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * ytile / n)))
+        lat_deg = math.degrees(lat_rad)
+        return (lon_deg, lat_deg)
 
     def generate_tile(self, z, x, y):
         self.lock.acquire()
@@ -53,20 +56,12 @@ class Livetiles():
         
         try:
             if self.load_exception is None:
-                prj = mapnik.Projection(self.map.srs)
-                # Projects between tile pixel co-ordinates and LatLong (EPSG:4326)
-                maxZoom = 18
-                tileproj = GoogleProjection(maxZoom+1)
-                
-                # Calculate pixel positions of bottom-left & top-right
-                p0 = (x * 256, (y + 1) * 256)
-                p1 = ((x + 1) * 256, y * 256)
-                
                 # Convert to LatLong (EPSG:4326)
-                l0 = tileproj.fromPixelToLL(p0, z);
-                l1 = tileproj.fromPixelToLL(p1, z);
+                l0 = self.num2deg(x, y, z)
+                l1 = self.num2deg(x + 1, y + 1, z)
                 
                 # Convert to map projection (e.g. mercator co-ords EPSG:900913)
+                prj = mapnik.Projection(self.map.srs)
                 c0 = prj.forward(mapnik.Coord(l0[0],l0[1]))
                 c1 = prj.forward(mapnik.Coord(l1[0],l1[1]))
                 
@@ -91,25 +86,27 @@ class Livetiles():
         
         return resp
 
-# init
-map_file = "../osm.xml"
-livetiles = Livetiles(map_file, 256)
-event_handler = ChangeEventHandler(livetiles)
-observer = Observer()
-
-# go live
-directory = os.path.dirname(map_file)
-observer.schedule(event_handler, path=directory, recursive=True)
-os.chdir(directory)
-livetiles.load_map()
-observer.start()
+class LivetilesApp():
+    #map_file = "../osm-upgraded.xml"
+    map_file = "/Users/gabor/Downloads/control-room/control-room.xml"
+    livetiles = Livetiles(map_file, 256)
+    event_handler = ChangeEventHandler(livetiles)
+    observer = Observer()
+    
+    # go live
+    directory = os.path.dirname(map_file)
+    observer.schedule(event_handler, path=directory, recursive=True)
+    os.chdir(directory)
+    livetiles.load_map()
+    observer.start()
 
 app = Flask(__name__)
 app.debug = True
+lt = LivetilesApp()
 
 @app.route('/tiles/<int:z>/<int:x>/<int:y>.png')
 def render_tile(z, x, y):
-    return livetiles.generate_tile(z, x, y)
+    return lt.livetiles.generate_tile(z, x, y)
 
 @app.route('/')
 def home():
@@ -117,3 +114,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000, debug=True)
+    
